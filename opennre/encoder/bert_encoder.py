@@ -20,6 +20,9 @@ class BERTEncoder(nn.Module):
         self.bert = BertModel.from_pretrained(pretrain_path)
         self.tokenizer = BertTokenizer.from_pretrained(pretrain_path)
 
+        # CRITICAL FIX: Set BERT to training mode!
+        self.bert.train()
+
     def forward(self, token, att_mask, pos1, pos2):
         """
         Args:
@@ -49,39 +52,97 @@ class BERTEncoder(nn.Module):
         pos_head = item['h']['pos']
         pos_tail = item['t']['pos']
 
-        pos_min = pos_head
-        pos_max = pos_tail
-        if pos_head[0] > pos_tail[0]:
-            pos_min = pos_tail
-            pos_max = pos_head
-            rev = True
-        else:
-            rev = False
-        
+        # FIXED: Handle nested entities correctly by sorting markers by position
+        # Determine which entity comes first
+        head_first = pos_head[0] <= pos_tail[0]
+
+        # Create marker list with positions and types
+        # Format: (char_position, marker_token, is_end, entity_type)
+        markers = []
         if not is_token:
-            sent0 = self.tokenizer.tokenize(sentence[:pos_min[0]])
-            ent0 = self.tokenizer.tokenize(sentence[pos_min[0]:pos_min[1]])
-            sent1 = self.tokenizer.tokenize(sentence[pos_min[1]:pos_max[0]])
-            ent1 = self.tokenizer.tokenize(sentence[pos_max[0]:pos_max[1]])
-            sent2 = self.tokenizer.tokenize(sentence[pos_max[1]:])
+            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
+            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
+            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
+            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
         else:
-            sent0 = self.tokenizer.tokenize(' '.join(sentence[:pos_min[0]]))
-            ent0 = self.tokenizer.tokenize(' '.join(sentence[pos_min[0]:pos_min[1]]))
-            sent1 = self.tokenizer.tokenize(' '.join(sentence[pos_min[1]:pos_max[0]]))
-            ent1 = self.tokenizer.tokenize(' '.join(sentence[pos_max[0]:pos_max[1]]))
-            sent2 = self.tokenizer.tokenize(' '.join(sentence[pos_max[1]:]))
+            # For token-based input, convert token positions to character-like positions
+            # by treating each token as a unit
+            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
+            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
+            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
+            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
+
+        # Sort markers by position (and by end markers after start markers at same position)
+        markers.sort(key=lambda x: (x[0], x[2]))  # Sort by position, then by is_end
+
+        # Build token sequence with markers
+        re_tokens = ['[CLS]']
+        prev_pos = 0
+        pos1_marker = '[unused0]' if head_first else '[unused2]'  # Head start marker
+        pos2_marker = '[unused2]' if head_first else '[unused0]'  # Tail start marker
+        pos1 = None
+        pos2 = None
 
         if self.mask_entity:
-            ent0 = ['[unused4]'] if not rev else ['[unused5]']
-            ent1 = ['[unused5]'] if not rev else ['[unused4]']
-        else:
-            ent0 = ['[unused0]'] + ent0 + ['[unused1]'] if not rev else ['[unused2]'] + ent0 + ['[unused3]']
-            ent1 = ['[unused2]'] + ent1 + ['[unused3]'] if not rev else ['[unused0]'] + ent1 + ['[unused1]']
+            # Replace markers with mask tokens
+            marker_map = {
+                '[unused0]': '[unused4]' if head_first else '[unused5]',
+                '[unused1]': '[unused4]' if head_first else '[unused5]',
+                '[unused2]': '[unused5]' if head_first else '[unused4]',
+                '[unused3]': '[unused5]' if head_first else '[unused4]'
+            }
 
-        re_tokens = ['[CLS]'] + sent0 + ent0 + sent1 + ent1 + sent2 + ['[SEP]']
-        
-        pos1 = 1 + len(sent0) if not rev else 1 + len(sent0 + ent0 + sent1)
-        pos2 = 1 + len(sent0 + ent0 + sent1) if not rev else 1 + len(sent0)
+        for char_pos, marker_token, is_end, entity_type in markers:
+            # Add text segment before this marker
+            if not is_token:
+                if char_pos > prev_pos:
+                    segment_tokens = self.tokenizer.tokenize(sentence[prev_pos:char_pos])
+                    re_tokens.extend(segment_tokens)
+            else:
+                # For token-based input
+                if char_pos > prev_pos:
+                    segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:char_pos]))
+                    re_tokens.extend(segment_tokens)
+
+            # Add marker
+            if self.mask_entity and not is_end:
+                # Only add mask for start markers
+                re_tokens.append(marker_map[marker_token])
+                # Update positions
+                if marker_token == pos1_marker:
+                    pos1 = len(re_tokens) - 1
+                elif marker_token == pos2_marker:
+                    pos2 = len(re_tokens) - 1
+            elif not self.mask_entity:
+                re_tokens.append(marker_token)
+                # Track positions for entity start markers
+                if marker_token == pos1_marker:
+                    pos1 = len(re_tokens) - 1
+                elif marker_token == pos2_marker:
+                    pos2 = len(re_tokens) - 1
+
+            # Update prev_pos only for end markers
+            if is_end:
+                prev_pos = char_pos
+
+        # Add remaining text after last marker
+        if not is_token:
+            if prev_pos < len(sentence):
+                segment_tokens = self.tokenizer.tokenize(sentence[prev_pos:])
+                re_tokens.extend(segment_tokens)
+        else:
+            if prev_pos < len(sentence):
+                segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:]))
+                re_tokens.extend(segment_tokens)
+
+        re_tokens.append('[SEP]')
+
+        # Ensure pos1 and pos2 are set
+        if pos1 is None:
+            pos1 = 1  # Default to position after [CLS]
+        if pos2 is None:
+            pos2 = 1
+
         pos1 = min(self.max_length - 1, pos1)
         pos2 = min(self.max_length - 1, pos2)
         indexed_tokens = self.tokenizer.convert_tokens_to_ids(re_tokens)
@@ -118,6 +179,11 @@ class BERTEntityEncoder(nn.Module):
         logging.info('Loading BERT pre-trained checkpoint.')
         self.bert = BertModel.from_pretrained(pretrain_path)
         self.tokenizer = BertTokenizer.from_pretrained(pretrain_path)
+
+        # CRITICAL FIX: Set BERT to training mode!
+        # By default, from_pretrained loads in eval mode
+        self.bert.train()
+
         self.linear = nn.Linear(self.hidden_size, self.hidden_size)
 
     def forward(self, token, att_mask, pos1, pos2):
@@ -131,6 +197,7 @@ class BERTEntityEncoder(nn.Module):
             (B, 2H), representations for sentences
         """
         hidden, _ = self.bert(token, attention_mask=att_mask, return_dict=False)
+
         # Get entity start hidden state
         onehot_head = torch.zeros(hidden.size()[:2]).float().to(hidden.device)  # (B, L)
         onehot_tail = torch.zeros(hidden.size()[:2]).float().to(hidden.device)  # (B, L)
@@ -159,41 +226,99 @@ class BERTEntityEncoder(nn.Module):
         pos_head = item['h']['pos']
         pos_tail = item['t']['pos']
 
-        pos_min = pos_head
-        pos_max = pos_tail
-        if pos_head[0] > pos_tail[0]:
-            pos_min = pos_tail
-            pos_max = pos_head
-            rev = True
-        else:
-            rev = False
-        
+        # FIXED: Handle nested entities correctly by sorting markers by position
+        # Determine which entity comes first
+        head_first = pos_head[0] <= pos_tail[0]
+
+        # Create marker list with positions and types
+        # Format: (char_position, marker_token, is_end, entity_type)
+        markers = []
         if not is_token:
-            sent0 = self.tokenizer.tokenize(sentence[:pos_min[0]])
-            ent0 = self.tokenizer.tokenize(sentence[pos_min[0]:pos_min[1]])
-            sent1 = self.tokenizer.tokenize(sentence[pos_min[1]:pos_max[0]])
-            ent1 = self.tokenizer.tokenize(sentence[pos_max[0]:pos_max[1]])
-            sent2 = self.tokenizer.tokenize(sentence[pos_max[1]:])
+            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
+            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
+            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
+            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
         else:
-            sent0 = self.tokenizer.tokenize(' '.join(sentence[:pos_min[0]]))
-            ent0 = self.tokenizer.tokenize(' '.join(sentence[pos_min[0]:pos_min[1]]))
-            sent1 = self.tokenizer.tokenize(' '.join(sentence[pos_min[1]:pos_max[0]]))
-            ent1 = self.tokenizer.tokenize(' '.join(sentence[pos_max[0]:pos_max[1]]))
-            sent2 = self.tokenizer.tokenize(' '.join(sentence[pos_max[1]:]))
+            # For token-based input, convert token positions to character-like positions
+            # by treating each token as a unit
+            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
+            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
+            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
+            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
+
+        # Sort markers by position (and by end markers after start markers at same position)
+        markers.sort(key=lambda x: (x[0], x[2]))  # Sort by position, then by is_end
+
+        # Build token sequence with markers
+        re_tokens = ['[CLS]']
+        prev_pos = 0
+        pos1_marker = '[unused0]' if head_first else '[unused2]'  # Head start marker
+        pos2_marker = '[unused2]' if head_first else '[unused0]'  # Tail start marker
+        pos1 = None
+        pos2 = None
 
         if self.mask_entity:
-            ent0 = ['[unused4]'] if not rev else ['[unused5]']
-            ent1 = ['[unused5]'] if not rev else ['[unused4]']
-        else:
-            ent0 = ['[unused0]'] + ent0 + ['[unused1]'] if not rev else ['[unused2]'] + ent0 + ['[unused3]']
-            ent1 = ['[unused2]'] + ent1 + ['[unused3]'] if not rev else ['[unused0]'] + ent1 + ['[unused1]']
+            # Replace markers with mask tokens
+            marker_map = {
+                '[unused0]': '[unused4]' if head_first else '[unused5]',
+                '[unused1]': '[unused4]' if head_first else '[unused5]',
+                '[unused2]': '[unused5]' if head_first else '[unused4]',
+                '[unused3]': '[unused5]' if head_first else '[unused4]'
+            }
 
-        re_tokens = ['[CLS]'] + sent0 + ent0 + sent1 + ent1 + sent2 + ['[SEP]']
-        pos1 = 1 + len(sent0) if not rev else 1 + len(sent0 + ent0 + sent1)
-        pos2 = 1 + len(sent0 + ent0 + sent1) if not rev else 1 + len(sent0)
+        for char_pos, marker_token, is_end, entity_type in markers:
+            # Add text segment before this marker
+            if not is_token:
+                if char_pos > prev_pos:
+                    segment_tokens = self.tokenizer.tokenize(sentence[prev_pos:char_pos])
+                    re_tokens.extend(segment_tokens)
+            else:
+                # For token-based input
+                if char_pos > prev_pos:
+                    segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:char_pos]))
+                    re_tokens.extend(segment_tokens)
+
+            # Add marker
+            if self.mask_entity and not is_end:
+                # Only add mask for start markers
+                re_tokens.append(marker_map[marker_token])
+                # Update positions
+                if marker_token == pos1_marker:
+                    pos1 = len(re_tokens) - 1
+                elif marker_token == pos2_marker:
+                    pos2 = len(re_tokens) - 1
+            elif not self.mask_entity:
+                re_tokens.append(marker_token)
+                # Track positions for entity start markers
+                if marker_token == pos1_marker:
+                    pos1 = len(re_tokens) - 1
+                elif marker_token == pos2_marker:
+                    pos2 = len(re_tokens) - 1
+
+            # Update prev_pos only for end markers
+            if is_end:
+                prev_pos = char_pos
+
+        # Add remaining text after last marker
+        if not is_token:
+            if prev_pos < len(sentence):
+                segment_tokens = self.tokenizer.tokenize(sentence[prev_pos:])
+                re_tokens.extend(segment_tokens)
+        else:
+            if prev_pos < len(sentence):
+                segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:]))
+                re_tokens.extend(segment_tokens)
+
+        re_tokens.append('[SEP]')
+
+        # Ensure pos1 and pos2 are set
+        if pos1 is None:
+            pos1 = 1  # Default to position after [CLS]
+        if pos2 is None:
+            pos2 = 1
+
         pos1 = min(self.max_length - 1, pos1)
         pos2 = min(self.max_length - 1, pos2)
-        
         indexed_tokens = self.tokenizer.convert_tokens_to_ids(re_tokens)
         avai_len = len(indexed_tokens)
 
