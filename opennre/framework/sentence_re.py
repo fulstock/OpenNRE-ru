@@ -7,18 +7,19 @@ from .utils import AverageMeter
 
 class SentenceRE(nn.Module):
 
-    def __init__(self, 
+    def __init__(self,
                  model,
-                 train_path, 
-                 val_path, 
+                 train_path,
+                 val_path,
                  test_path,
-                 ckpt, 
-                 batch_size=32, 
-                 max_epoch=100, 
-                 lr=0.1, 
-                 weight_decay=1e-5, 
+                 ckpt,
+                 batch_size=32,
+                 max_epoch=100,
+                 lr=0.1,
+                 weight_decay=1e-5,
                  warmup_step=300,
-                 opt='sgd'):
+                 opt='sgd',
+                 use_class_weights=False):
     
         super().__init__()
         self.max_epoch = max_epoch
@@ -61,8 +62,48 @@ class SentenceRE(nn.Module):
         else:
             logging.info("Using single GPU or CPU, skipping DataParallel")
             self.parallel_model = self.model
-        # Criterion
-        self.criterion = nn.CrossEntropyLoss()
+        # Criterion - optionally use class weights to address class imbalance
+        if use_class_weights and train_path is not None:
+            logging.info("Calculating class weights from training data...")
+            class_counts = {}
+            for item in self.train_loader.dataset.data:
+                rel = item['relation']
+                class_counts[rel] = class_counts.get(rel, 0) + 1
+
+            # Create weight tensor
+            num_classes = len(model.rel2id)
+            class_weights = torch.ones(num_classes)
+
+            # Calculate inverse frequency weights
+            total_samples = sum(class_counts.values())
+            for rel, count in class_counts.items():
+                rel_id = model.rel2id[rel]
+                # Inverse frequency weight
+                class_weights[rel_id] = total_samples / (num_classes * count)
+
+            # Special handling for 'Na' class - reduce its weight to encourage predicting relations
+            if 'Na' in model.rel2id:
+                na_id = model.rel2id['Na']
+                # Scale down Na weight by 10x to penalize false negatives on actual relations
+                class_weights[na_id] = class_weights[na_id] * 0.1
+
+            # Normalize weights so they average to 1.0
+            class_weights = class_weights / class_weights.mean()
+
+            logging.info(f"Class weights calculated. Na weight: {class_weights[model.rel2id['Na']]:.4f}, " +
+                        f"Mean non-Na weight: {class_weights[[i for i in range(num_classes) if i != model.rel2id.get('Na', -1)]].mean():.4f}")
+
+            if torch.cuda.is_available():
+                class_weights = class_weights.cuda()
+
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            # Use standard unweighted loss
+            if use_class_weights:
+                logging.info("Class weights requested but no training data available, using unweighted loss")
+            else:
+                logging.info("Using standard unweighted CrossEntropyLoss")
+            self.criterion = nn.CrossEntropyLoss()
         # Params and optimizer
         params = self.parameters()
         self.lr = lr
