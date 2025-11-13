@@ -22,7 +22,7 @@ class SentenceREDataset(data.Dataset):
         self.kwargs = kwargs
 
         # Load the file
-        f = open(path)
+        f = open(path, encoding = "UTF-8")
         self.data = []
         for line in f.readlines():
             line = line.rstrip()
@@ -102,8 +102,11 @@ class SentenceREDataset(data.Dataset):
         logging.info('Evaluation result: {}.'.format(result))
         return result
     
-def SentenceRELoader(path, rel2id, tokenizer, batch_size, 
-        shuffle, num_workers=8, collate_fn=SentenceREDataset.collate_fn, **kwargs):
+def SentenceRELoader(path, rel2id, tokenizer, batch_size,
+        shuffle, num_workers=0, collate_fn=SentenceREDataset.collate_fn, **kwargs):
+    # CRITICAL FIX: Default to num_workers=0 instead of 8
+    # Multiprocessing workers cause issues with BERT model serialization
+    # leading to corrupted embeddings. Use single-process loading instead.
     dataset = SentenceREDataset(path = path, rel2id = rel2id, tokenizer = tokenizer, kwargs=kwargs)
     data_loader = data.DataLoader(dataset=dataset,
             batch_size=batch_size,
