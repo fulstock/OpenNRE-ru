@@ -353,36 +353,60 @@ def main():
     for i, (rel, f1, count) in enumerate(relation_f1[:10]):
         logging.info(f"{i+1}. {rel}: F1={f1:.3f} (n={count})")
 
-    # CSV table for Google Sheets
+    # CSV table for Google Sheets (NON-NA RELATIONS ONLY)
     logging.info("\n" + "=" * 100)
-    logging.info("CSV TABLE FOR GOOGLE SHEETS (copy everything below)")
+    logging.info("CSV TABLE FOR NON-NA RELATIONS (copy everything below)")
     logging.info("=" * 100)
 
     # Header
-    logging.info("Relation,TP,FP,FN,Precision,Recall,F1")
+    logging.info("Relation,TP,FP,FN,Gold,Pred,Precision,Recall,F1")
 
-    # Sort relations by frequency (gold instances) for consistent ordering
-    sorted_relations = sorted(relation_stats.items(), key=lambda x: x[1]['total_gold'], reverse=True)
+    # Sort non-Na relations by frequency (gold instances) for consistent ordering
+    non_na_sorted_relations = sorted(non_na_stats.items(), key=lambda x: x[1]['total_gold'], reverse=True)
 
-    # Per-relation rows
-    for relation, stats in sorted_relations:
+    # Per-relation rows (NON-NA ONLY)
+    for relation, stats in non_na_sorted_relations:
         if stats['total_gold'] == 0:
             continue
 
         tp = stats['tp']
         fp = stats['fp']
         fn = stats['fn']
+        total_gold = stats['total_gold']
+        total_pred = stats['total_pred']
 
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
 
-        logging.info(f"{relation},{tp},{fp},{fn},{precision:.4f},{recall:.4f},{f1:.4f}")
+        logging.info(f"{relation},{tp},{fp},{fn},{total_gold},{total_pred},{precision:.4f},{recall:.4f},{f1:.4f}")
 
-    # Totals and averages
-    logging.info(f"TOTAL,{total_tp},{total_fp},{total_fn},-,-,-")
-    logging.info(f"MICRO_AVG,-,-,-,{micro_precision:.4f},{micro_recall:.4f},{micro_f1:.4f}")
-    logging.info(f"MACRO_AVG,-,-,-,{macro_precision:.4f},{macro_recall:.4f},{macro_f1:.4f}")
+    # Non-Na totals and averages
+    logging.info(f"TOTAL,{non_na_tp},{non_na_fp},{non_na_fn},{non_na_total},-,-,-,-")
+    logging.info(f"MICRO_AVG,-,-,-,-,-,{non_na_micro_precision:.4f},{non_na_micro_recall:.4f},{non_na_micro_f1:.4f}")
+    logging.info(f"MACRO_AVG,-,-,-,-,-,{non_na_macro_precision:.4f},{non_na_macro_recall:.4f},{non_na_macro_f1:.4f}")
+
+    # Also save to CSV file
+    csv_filename = args.predictions_file.replace('.json', '_non_na_metrics.csv')
+    with open(csv_filename, 'w', encoding='utf-8') as csv_file:
+        csv_file.write("Relation,TP,FP,FN,Gold,Pred,Precision,Recall,F1\n")
+        for relation, stats in non_na_sorted_relations:
+            if stats['total_gold'] == 0:
+                continue
+            tp = stats['tp']
+            fp = stats['fp']
+            fn = stats['fn']
+            total_gold = stats['total_gold']
+            total_pred = stats['total_pred']
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+            f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+            csv_file.write(f"{relation},{tp},{fp},{fn},{total_gold},{total_pred},{precision:.4f},{recall:.4f},{f1:.4f}\n")
+        csv_file.write(f"TOTAL,{non_na_tp},{non_na_fp},{non_na_fn},{non_na_total},-,-,-,-\n")
+        csv_file.write(f"MICRO_AVG,-,-,-,-,-,{non_na_micro_precision:.4f},{non_na_micro_recall:.4f},{non_na_micro_f1:.4f}\n")
+        csv_file.write(f"MACRO_AVG,-,-,-,-,-,{non_na_macro_precision:.4f},{non_na_macro_recall:.4f},{non_na_macro_f1:.4f}\n")
+
+    logging.info(f"\n✓ CSV saved to: {csv_filename}")
 
 if __name__ == "__main__":
     main()

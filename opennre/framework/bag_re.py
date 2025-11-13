@@ -171,10 +171,10 @@ class BagRE(nn.Module):
                 logits = logits.cpu().numpy()
                 for i in range(len(logits)):
                     for relid in range(self.model.module.num_class):
-                        if self.model.module.id2rel[relid] != 'NA':
+                        if self.model.module.id2rel[relid] not in ['NA', 'na', 'Na', 'N/A', 'None', 'none', 'n/a', 'no_relation', 'no relation']:
                             pred_result.append({
-                                'entpair': bag_name[i][:2], 
-                                'relation': self.model.module.id2rel[relid], 
+                                'entpair': bag_name[i][:2],
+                                'relation': self.model.module.id2rel[relid],
                                 'score': logits[i][relid]
                             })
             result = eval_loader.dataset.eval(pred_result)

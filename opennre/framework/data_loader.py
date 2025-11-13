@@ -65,7 +65,7 @@ class SentenceREDataset(data.Dataset):
         pred_positive = 0
         gold_positive = 0
         neg = -1
-        for name in ['NA', 'na', 'no_relation', 'Other', 'Others']:
+        for name in ['NA', 'na', 'Na', 'no_relation', 'Other', 'Others', 'no relation', 'None']:
             if name in self.rel2id:
                 if use_name:
                     neg = name
@@ -307,7 +307,7 @@ class BagREDataset(data.Dataset):
         max_macro_f1 = sklearn.metrics.f1_score(label_vec, pred_result_vec, labels=list(range(1, len(self.rel2id))), average='macro')
         max_micro_f1_each_relation = {}
         for rel in self.rel2id:
-            if rel != 'NA':
+            if rel not in ['NA', 'na', 'Na', 'N/A', 'None', 'none', 'n/a', 'no_relation', 'no relation']:
                 max_micro_f1_each_relation[rel] = sklearn.metrics.f1_score(label_vec, pred_result_vec, labels=[self.rel2id[rel]], average='micro')
 
         return {'np_prec': np_prec, 'np_rec': np_rec, 'max_micro_f1': max_micro_f1, 'max_macro_f1': max_macro_f1, 'auc': auc, 'p@100': np_prec[99], 'p@200': np_prec[199], 'p@300': np_prec[299], 'avg_p300': (np_prec[99] + np_prec[199] + np_prec[299]) / 3, 'micro_f1': micro_f1, 'macro_f1': macro_f1, 'max_micro_f1_each_relation': max_micro_f1_each_relation}
@@ -391,7 +391,7 @@ class MultiLabelSentenceREDataset(data.Dataset):
         total = 0
         for sent_id in range(len(self.data)):
             for rel in self.rel2id:
-                if rel not in ['NA', 'na', 'N/A', 'None', 'none', 'n/a', 'no_relation']:
+                if rel not in ['NA', 'na', 'Na', 'N/A', 'None', 'none', 'n/a', 'no_relation', 'no relation']:
                     sorted_result.append({'sent_id': sent_id, 'relation': rel, 'score': pred_score[sent_id][self.rel2id[rel]]})
                     if 'anno_relation_list' in self.data[sent_id]:
                         if rel in self.data[sent_id]['anno_relation_list']:
