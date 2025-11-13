@@ -55,6 +55,8 @@ if __name__ == '__main__':
             help='Maximum sentence length')
     parser.add_argument('--max_epoch', default=3, type=int,
             help='Max number of training epochs')
+    parser.add_argument('--use_class_weights', action='store_true',
+            help='Use class-weighted loss to address class imbalance (reduces Na over-prediction)')
 
     # Seed
     parser.add_argument('--seed', default=42, type=int,
@@ -126,7 +128,8 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         max_epoch=args.max_epoch,
         lr=args.lr,
-        opt='adamw'
+        opt='adamw',
+        use_class_weights=args.use_class_weights
     )
 
     # Train the model
