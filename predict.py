@@ -134,11 +134,11 @@ def main():
             item = test_loader.dataset.data[i]
             pred_relation = id2rel[pred_id]
             gold_relation = item['relation']
-
             output = {
                 'text': item['text'],
                 'head': item['h'],
                 'tail': item['t'],
+<<<<<<< HEAD
                 'predicted_relation': pred_relation
             }
 
@@ -174,7 +174,6 @@ def main():
                 status = '✓' if pred['correct'] else '✗'
             else:
                 status = '•'  # No gold label
-
             text = pred['text']
             if len(text) > 100:
                 text = text[:100] + '...'

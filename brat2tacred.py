@@ -469,7 +469,6 @@ Output Format:
         action='store_true',
         help='Generate ALL entity pairs for inference (not just pairs with gold relations). Use this for inference on new data.'
     )
-
     args = parser.parse_args()
 
     # Validate input directory
