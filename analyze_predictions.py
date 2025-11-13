@@ -87,17 +87,17 @@ def main():
     correct = sum(1 for p in preds_with_gold if p['correct'])
     accuracy = correct / total
 
-    # Calculate overall TP, FP, FN for micro averages
+    # Calculate overall TP, FP, FN for micro averages (INCLUDING Na)
     total_tp = sum(stats['tp'] for stats in relation_stats.values())
     total_fp = sum(stats['fp'] for stats in relation_stats.values())
     total_fn = sum(stats['fn'] for stats in relation_stats.values())
 
-    # Micro averages
+    # Micro averages (INCLUDING Na)
     micro_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
     micro_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
     micro_f1 = 2 * micro_precision * micro_recall / (micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
 
-    # Macro averages (only for relations with at least one gold instance)
+    # Macro averages (INCLUDING Na)
     valid_relations = [rel for rel, stats in relation_stats.items() if stats['total_gold'] > 0]
     precisions = []
     recalls = []
@@ -117,16 +117,52 @@ def main():
     macro_recall = sum(recalls) / len(recalls) if recalls else 0
     macro_f1 = sum(f1s) / len(f1s) if f1s else 0
 
+    # ===== Calculate metrics EXCLUDING Na (the important metrics for relation extraction) =====
+    # Filter out Na from calculations
+    non_na_stats = {rel: stats for rel, stats in relation_stats.items() if rel != 'Na'}
+
+    # Calculate non-Na TP, FP, FN for micro averages
+    non_na_tp = sum(stats['tp'] for stats in non_na_stats.values())
+    non_na_fp = sum(stats['fp'] for stats in non_na_stats.values())
+    non_na_fn = sum(stats['fn'] for stats in non_na_stats.values())
+
+    # Non-Na micro averages
+    non_na_micro_precision = non_na_tp / (non_na_tp + non_na_fp) if (non_na_tp + non_na_fp) > 0 else 0
+    non_na_micro_recall = non_na_tp / (non_na_tp + non_na_fn) if (non_na_tp + non_na_fn) > 0 else 0
+    non_na_micro_f1 = 2 * non_na_micro_precision * non_na_micro_recall / (non_na_micro_precision + non_na_micro_recall) if (non_na_micro_precision + non_na_micro_recall) > 0 else 0
+
+    # Non-Na macro averages (only non-Na relations)
+    non_na_valid_relations = [rel for rel, stats in non_na_stats.items() if stats['total_gold'] > 0]
+    non_na_precisions = []
+    non_na_recalls = []
+    non_na_f1s = []
+
+    for relation in non_na_valid_relations:
+        stats = non_na_stats[relation]
+        precision = stats['tp'] / (stats['tp'] + stats['fp']) if (stats['tp'] + stats['fp']) > 0 else 0
+        recall = stats['tp'] / (stats['tp'] + stats['fn']) if (stats['tp'] + stats['fn']) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+
+        non_na_precisions.append(precision)
+        non_na_recalls.append(recall)
+        non_na_f1s.append(f1)
+
+    non_na_macro_precision = sum(non_na_precisions) / len(non_na_precisions) if non_na_precisions else 0
+    non_na_macro_recall = sum(non_na_recalls) / len(non_na_recalls) if non_na_recalls else 0
+    non_na_macro_f1 = sum(non_na_f1s) / len(non_na_f1s) if non_na_f1s else 0
+
+    # Count non-Na predictions
+    non_na_preds = [p for p in preds_with_gold if p['gold_relation'] != 'Na']
+    non_na_total = len(non_na_preds)
+    non_na_correct = sum(1 for p in non_na_preds if p['correct'])
+    non_na_accuracy = non_na_correct / non_na_total if non_na_total > 0 else 0
+
     logging.info("=" * 100)
-    logging.info("OVERALL METRICS")
+    logging.info("OVERALL METRICS (INCLUDING Na)")
     logging.info("=" * 100)
     logging.info(f"Total predictions: {total}")
     logging.info(f"Correct predictions: {correct}")
     logging.info(f"Accuracy: {accuracy:.4f}")
-    logging.info("")
-    logging.info(f"Total TP: {total_tp}")
-    logging.info(f"Total FP: {total_fp}")
-    logging.info(f"Total FN: {total_fn}")
     logging.info("")
     logging.info(f"Micro Precision: {micro_precision:.4f}")
     logging.info(f"Micro Recall: {micro_recall:.4f}")
@@ -135,6 +171,21 @@ def main():
     logging.info(f"Macro Precision: {macro_precision:.4f}")
     logging.info(f"Macro Recall: {macro_recall:.4f}")
     logging.info(f"Macro F1: {macro_f1:.4f}")
+
+    logging.info("\n" + "=" * 100)
+    logging.info("RELATION EXTRACTION METRICS (EXCLUDING Na) ⭐")
+    logging.info("=" * 100)
+    logging.info(f"Total non-Na predictions: {non_na_total}")
+    logging.info(f"Correct non-Na predictions: {non_na_correct}")
+    logging.info(f"Non-Na Accuracy: {non_na_accuracy:.4f}")
+    logging.info("")
+    logging.info(f"Non-Na Micro Precision: {non_na_micro_precision:.4f}")
+    logging.info(f"Non-Na Micro Recall: {non_na_micro_recall:.4f}")
+    logging.info(f"Non-Na Micro F1: {non_na_micro_f1:.4f}")
+    logging.info("")
+    logging.info(f"Non-Na Macro Precision: {non_na_macro_precision:.4f}")
+    logging.info(f"Non-Na Macro Recall: {non_na_macro_recall:.4f}")
+    logging.info(f"Non-Na Macro F1: {non_na_macro_f1:.4f}")
 
     # Per-relation performance
     logging.info("\n" + "=" * 100)
