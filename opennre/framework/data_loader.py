@@ -99,7 +99,7 @@ class SentenceREDataset(data.Dataset):
         except:
             micro_f1 = 0
         result = {'acc': acc, 'micro_p': micro_p, 'micro_r': micro_r, 'micro_f1': micro_f1}
-        logging.info('Evaluation result: {}.'.format(result))
+        logging.info('Evaluation result (acc=all, micro_p/r/f1=non-Na only): {}.'.format(result))
         return result
     
 def SentenceRELoader(path, rel2id, tokenizer, batch_size,
