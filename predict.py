@@ -138,7 +138,6 @@ def main():
                 'text': item['text'],
                 'head': item['h'],
                 'tail': item['t'],
-<<<<<<< HEAD
                 'predicted_relation': pred_relation
             }
 
