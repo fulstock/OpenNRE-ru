@@ -57,7 +57,7 @@ class SentenceREDataset(data.Dataset):
                 Make sure that the `shuffle` param is set to `False` when getting the loader.
             use_name: if True, `pred_result` contains predicted relation names instead of ids
         Return:
-            {'acc': xx}
+            {'acc': xx, 'macro_acc': xx, 'micro_f1': xx, 'macro_f1': xx, ...}
         """
         correct = 0
         total = len(self.data)
@@ -72,19 +72,38 @@ class SentenceREDataset(data.Dataset):
                 else:
                     neg = self.rel2id[name]
                 break
+
+        # Per-class statistics for macro metrics
+        from collections import defaultdict
+        per_class_stats = defaultdict(lambda: {'tp': 0, 'fp': 0, 'fn': 0, 'total': 0})
+
         for i in range(total):
             if use_name:
                 golden = self.data[i]['relation']
+                predicted = pred_result[i]
             else:
                 golden = self.rel2id[self.data[i]['relation']]
-            if golden == pred_result[i]:
+                predicted = pred_result[i]
+
+            # Overall accuracy
+            if golden == predicted:
                 correct += 1
                 if golden != neg:
                     correct_positive += 1
+                per_class_stats[golden]['tp'] += 1
+            else:
+                per_class_stats[golden]['fn'] += 1
+                per_class_stats[predicted]['fp'] += 1
+
+            # Track totals for each class
+            per_class_stats[golden]['total'] += 1
+
             if golden != neg:
-                gold_positive +=1
-            if pred_result[i] != neg:
+                gold_positive += 1
+            if predicted != neg:
                 pred_positive += 1
+
+        # Micro metrics (excluding Na)
         acc = float(correct) / float(total)
         try:
             micro_p = float(correct_positive) / float(pred_positive)
@@ -98,8 +117,55 @@ class SentenceREDataset(data.Dataset):
             micro_f1 = 2 * micro_p * micro_r / (micro_p + micro_r)
         except:
             micro_f1 = 0
-        result = {'acc': acc, 'micro_p': micro_p, 'micro_r': micro_r, 'micro_f1': micro_f1}
-        logging.info('Evaluation result (acc=all, micro_p/r/f1=non-Na only): {}.'.format(result))
+
+        # Macro metrics (including Na)
+        class_accuracies = []
+        class_precisions = []
+        class_recalls = []
+        class_f1s = []
+
+        for class_id, stats in per_class_stats.items():
+            # Per-class accuracy (tp / total for this class)
+            if stats['total'] > 0:
+                class_acc = stats['tp'] / stats['total']
+                class_accuracies.append(class_acc)
+
+            # Per-class precision
+            if stats['tp'] + stats['fp'] > 0:
+                class_p = stats['tp'] / (stats['tp'] + stats['fp'])
+                class_precisions.append(class_p)
+
+            # Per-class recall
+            if stats['tp'] + stats['fn'] > 0:
+                class_r = stats['tp'] / (stats['tp'] + stats['fn'])
+                class_recalls.append(class_r)
+
+            # Per-class F1
+            if stats['tp'] + stats['fp'] > 0 and stats['tp'] + stats['fn'] > 0:
+                p = stats['tp'] / (stats['tp'] + stats['fp'])
+                r = stats['tp'] / (stats['tp'] + stats['fn'])
+                if p + r > 0:
+                    class_f1s.append(2 * p * r / (p + r))
+
+        macro_acc = np.mean(class_accuracies) if class_accuracies else 0
+        macro_p = np.mean(class_precisions) if class_precisions else 0
+        macro_r = np.mean(class_recalls) if class_recalls else 0
+        macro_f1 = np.mean(class_f1s) if class_f1s else 0
+
+        result = {
+            'acc': acc,
+            'micro_p': micro_p,
+            'micro_r': micro_r,
+            'micro_f1': micro_f1,
+            'macro_acc': macro_acc,
+            'macro_p': macro_p,
+            'macro_r': macro_r,
+            'macro_f1': macro_f1
+        }
+        logging.info('Evaluation result:')
+        logging.info('  Overall acc: {:.4f}'.format(acc))
+        logging.info('  Micro (non-Na): P={:.4f}, R={:.4f}, F1={:.4f}'.format(micro_p, micro_r, micro_f1))
+        logging.info('  Macro (all classes): Acc={:.4f}, P={:.4f}, R={:.4f}, F1={:.4f}'.format(macro_acc, macro_p, macro_r, macro_f1))
         return result
     
 def SentenceRELoader(path, rel2id, tokenizer, batch_size,

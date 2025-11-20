@@ -164,7 +164,14 @@ class SentenceRE(nn.Module):
             logging.info("=== Epoch %d train ===" % epoch)
             avg_loss = AverageMeter()
             avg_acc = AverageMeter()
+            avg_macro_acc = AverageMeter()
             t = tqdm(self.train_loader)
+
+            # Track per-class correct predictions for macro accuracy
+            from collections import defaultdict
+            per_class_correct = defaultdict(int)
+            per_class_total = defaultdict(int)
+
             for iter, data in enumerate(t):
                 if torch.cuda.is_available():
                     for i in range(len(data)):
@@ -182,10 +189,25 @@ class SentenceRE(nn.Module):
                 score, pred = logits.max(-1) # (B)
                 acc = float((pred == label).long().sum()) / label.size(0)
 
+                # Calculate macro accuracy for this batch
+                for i in range(label.size(0)):
+                    class_id = label[i].item()
+                    per_class_total[class_id] += 1
+                    if pred[i] == label[i]:
+                        per_class_correct[class_id] += 1
+
+                # Compute macro accuracy (average of per-class accuracies)
+                class_accs = []
+                for class_id in per_class_total:
+                    if per_class_total[class_id] > 0:
+                        class_accs.append(per_class_correct[class_id] / per_class_total[class_id])
+                macro_acc = sum(class_accs) / len(class_accs) if class_accs else 0
+
                 # Log
                 avg_loss.update(loss.item(), 1)
                 avg_acc.update(acc, 1)
-                t.set_postfix(loss=avg_loss.avg, acc=avg_acc.avg)
+                avg_macro_acc.update(macro_acc, 1)
+                t.set_postfix(loss=avg_loss.avg, acc=avg_acc.avg, macro_acc=avg_macro_acc.avg)
 
                 # Optimize
                 loss.backward()
