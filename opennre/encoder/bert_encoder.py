@@ -16,7 +16,6 @@ class BERTEncoder(nn.Module):
         super().__init__()
         self.max_length = max_length
         self.blank_padding = blank_padding
-        self.hidden_size = 768
         self.mask_entity = mask_entity
 
         # Auto-detect model type (BERT, RoBERTa, etc.)
@@ -24,6 +23,10 @@ class BERTEncoder(nn.Module):
         config = AutoConfig.from_pretrained(pretrain_path)
         self.model_type = config.model_type.lower()
         logging.info(f'Detected model type: {self.model_type}')
+
+        # Get actual hidden size from config (768 for BERT, 1024 for RoBERTa-large, etc.)
+        self.hidden_size = config.hidden_size
+        logging.info(f'Model hidden size: {self.hidden_size}')
 
         self.bert = AutoModel.from_pretrained(pretrain_path)
         self.tokenizer = AutoTokenizer.from_pretrained(pretrain_path)
@@ -221,7 +224,6 @@ class BERTEntityEncoder(nn.Module):
         super().__init__()
         self.max_length = max_length
         self.blank_padding = blank_padding
-        self.hidden_size = 768 * 2
         self.mask_entity = mask_entity
 
         # Auto-detect model type (BERT, RoBERTa, etc.)
@@ -229,6 +231,11 @@ class BERTEntityEncoder(nn.Module):
         config = AutoConfig.from_pretrained(pretrain_path)
         self.model_type = config.model_type.lower()
         logging.info(f'Detected model type: {self.model_type}')
+
+        # Get actual hidden size from config (768 for BERT, 1024 for RoBERTa-large, etc.)
+        actual_hidden_size = config.hidden_size
+        self.hidden_size = actual_hidden_size * 2  # *2 because we concatenate head and tail entities
+        logging.info(f'Model hidden size: {actual_hidden_size}, Entity encoder output: {self.hidden_size}')
 
         self.bert = AutoModel.from_pretrained(pretrain_path)
         self.tokenizer = AutoTokenizer.from_pretrained(pretrain_path)
