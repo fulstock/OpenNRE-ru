@@ -27,18 +27,25 @@ class SentenceREDataset(data.Dataset):
         for line in f.readlines():
             line = line.rstrip()
             if len(line) > 0:
-                self.data.append(eval(line))
+                self.data.append(json.loads(line))
         f.close()
         logging.info("Loaded sentence RE dataset {} with {} lines and {} relations.".format(path, len(self.data), len(self.rel2id)))
-        
+
+        # Pre-tokenize all data for faster training
+        logging.info("Pre-tokenizing dataset...")
+        self.tokenized_data = []
+        for item in self.data:
+            seq = list(tokenizer(item, **kwargs))
+            label = rel2id[item['relation']]
+            self.tokenized_data.append([label] + seq)
+        logging.info("Tokenization complete! {} examples ready.".format(len(self.tokenized_data)))
+
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, index):
-        item = self.data[index]
-        seq = list(self.tokenizer(item, **self.kwargs))
-        res = [self.rel2id[item['relation']]] + seq
-        return [self.rel2id[item['relation']]] + seq # label, seq1, seq2, ...
+        # Return pre-tokenized data (much faster than tokenizing on-the-fly)
+        return self.tokenized_data[index]
     
     def collate_fn(data):
         data = list(zip(*data))
@@ -208,7 +215,7 @@ class BagREDataset(data.Dataset):
         for line in f:
             line = line.rstrip()
             if len(line) > 0:
-                self.data.append(eval(line))
+                self.data.append(json.loads(line))
         f.close()
 
         # Construct bag-level dataset (a bag contains instances sharing the same relation fact)
@@ -418,7 +425,7 @@ class MultiLabelSentenceREDataset(data.Dataset):
         for line in f.readlines():
             line = line.rstrip()
             if len(line) > 0:
-                self.data.append(eval(line))
+                self.data.append(json.loads(line))
         f.close()
         logging.info("Loaded sentence RE dataset {} with {} lines and {} relations.".format(path, len(self.data), len(self.rel2id)))
         
