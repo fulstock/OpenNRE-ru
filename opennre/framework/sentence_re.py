@@ -64,6 +64,7 @@ class SentenceRE(nn.Module):
             self.parallel_model = self.model
         # Criterion - optionally use class weights to address class imbalance
         if use_class_weights and train_path is not None:
+            import math
             logging.info("Calculating class weights from training data...")
             class_counts = {}
             for item in self.train_loader.dataset.data:
@@ -74,24 +75,65 @@ class SentenceRE(nn.Module):
             num_classes = len(model.rel2id)
             class_weights = torch.ones(num_classes)
 
-            # Calculate inverse frequency weights
-            total_samples = sum(class_counts.values())
-            for rel, count in class_counts.items():
+            # TWO-TIER WEIGHTING STRATEGY:
+            # 1. Separate Na from positive relations
+            # 2. Apply sqrt inverse frequency to positive relations
+            # 3. Set Na to a fixed lower weight (tunable)
+
+            # Find Na class
+            na_rel = None
+            for name in ['NA', 'na', 'Na', 'no_relation', 'Other', 'Others']:
+                if name in model.rel2id:
+                    na_rel = name
+                    break
+
+            # Separate Na from other relations
+            non_na_counts = {k: v for k, v in class_counts.items() if k != na_rel}
+            non_na_total = sum(non_na_counts.values())
+            non_na_classes = len(non_na_counts)
+
+            logging.info(f"Class distribution: {len(class_counts)} total classes")
+            logging.info(f"  Na class: {class_counts.get(na_rel, 0)} samples ({100*class_counts.get(na_rel, 0)/sum(class_counts.values()):.1f}%)")
+            logging.info(f"  Positive relations: {non_na_total} samples across {non_na_classes} classes")
+
+            # Calculate weights for non-Na classes using SQRT inverse frequency
+            # This is less aggressive than pure inverse frequency
+            temp_weights = {}
+            for rel, count in non_na_counts.items():
                 rel_id = model.rel2id[rel]
-                # Inverse frequency weight
-                class_weights[rel_id] = total_samples / (num_classes * count)
+                # Square root makes weights less extreme for rare classes
+                temp_weights[rel_id] = math.sqrt(non_na_total / (non_na_classes * count))
 
-            # Special handling for 'Na' class - reduce its weight to encourage predicting relations
-            if 'Na' in model.rel2id:
-                na_id = model.rel2id['Na']
-                # Scale down Na weight by 10x to penalize false negatives on actual relations
-                class_weights[na_id] = class_weights[na_id] * 0.1
+            # Normalize non-Na weights to average to target value
+            # Higher target = more emphasis on positive relations vs Na
+            target_non_na_avg = 5.0
+            if temp_weights:
+                mean_non_na = sum(temp_weights.values()) / len(temp_weights)
+                for rel_id in temp_weights:
+                    class_weights[rel_id] = temp_weights[rel_id] / mean_non_na * target_non_na_avg
 
-            # Normalize weights so they average to 1.0
+            # Set Na to fixed lower weight
+            # Lower value = less penalty for misclassifying Na (encourages predicting relations)
+            # Higher value = more penalty for misclassifying Na (more conservative)
+            # Recommended range: 0.3 - 1.0
+            na_weight = 0.5
+            if na_rel and na_rel in model.rel2id:
+                na_id = model.rel2id[na_rel]
+                class_weights[na_id] = na_weight
+
+            # Final normalization so weights average to 1.0
             class_weights = class_weights / class_weights.mean()
 
-            logging.info(f"Class weights calculated. Na weight: {class_weights[model.rel2id['Na']]:.4f}, " +
-                        f"Mean non-Na weight: {class_weights[[i for i in range(num_classes) if i != model.rel2id.get('Na', -1)]].mean():.4f}")
+            # Log weight statistics
+            na_final_weight = class_weights[model.rel2id[na_rel]].item() if na_rel else 0
+            non_na_indices = [i for i in range(num_classes) if i != model.rel2id.get(na_rel, -1)]
+            mean_non_na_weight = class_weights[non_na_indices].mean().item() if non_na_indices else 0
+
+            logging.info(f"Class weights calculated:")
+            logging.info(f"  Na weight: {na_final_weight:.4f}")
+            logging.info(f"  Mean non-Na weight: {mean_non_na_weight:.4f}")
+            logging.info(f"  Weight ratio (non-Na/Na): {mean_non_na_weight/na_final_weight:.2f}x")
+            logging.info(f"  Weight range: [{class_weights.min().item():.4f}, {class_weights.max().item():.4f}]")
 
             if torch.cuda.is_available():
                 class_weights = class_weights.cuda()
@@ -216,18 +258,23 @@ class SentenceRE(nn.Module):
                     self.scheduler.step()
                 self.optimizer.zero_grad()
                 global_step += 1
-            # Val 
+            # Val
             logging.info("=== Epoch %d val ===" % epoch)
-            result = self.eval_model(self.val_loader) 
-            logging.info('Metric {} current / best: {} / {}'.format(metric, result[metric], best_metric))
+            result = self.eval_model(self.val_loader)
+            logging.info('Early stopping metric: {} | Current: {:.4f} | Best: {:.4f}'.format(
+                metric, result[metric], best_metric))
             if result[metric] > best_metric:
-                logging.info("Best ckpt and saved.")
+                logging.info("🎯 New best model! Saving checkpoint...")
                 folder_path = '/'.join(self.ckpt.split('/')[:-1])
                 if not os.path.exists(folder_path):
                     os.mkdir(folder_path)
                 torch.save({'state_dict': self.model.state_dict()}, self.ckpt)
                 best_metric = result[metric]
-        logging.info("Best %s on val set: %f" % (metric, best_metric))
+            else:
+                logging.info("No improvement.")
+        logging.info("=" * 80)
+        logging.info("Training complete! Best %s on val set: %.4f" % (metric, best_metric))
+        logging.info("=" * 80)
 
     def eval_model(self, eval_loader):
         self.eval()

@@ -134,18 +134,29 @@ if __name__ == '__main__':
 
     # Train the model
     if not args.only_test:
-        framework.train_model('micro_f1')
+        framework.train_model('macro_f1')
 
     # Test
     framework.load_state_dict(torch.load(ckpt)['state_dict'])
     result = framework.eval_model(framework.test_loader)
 
     # Print the result
-    logging.info('Test set results:')
-    logging.info('Accuracy: {}'.format(result['acc']))
-    logging.info('Micro precision: {}'.format(result['micro_p']))
-    logging.info('Micro recall: {}'.format(result['micro_r']))
-    logging.info('Micro F1: {}'.format(result['micro_f1']))
+    logging.info('=' * 80)
+    logging.info('TEST SET RESULTS')
+    logging.info('=' * 80)
+    logging.info('Overall Accuracy: {:.4f}'.format(result['acc']))
+    logging.info('')
+    logging.info('Micro metrics (non-Na only):')
+    logging.info('  Precision: {:.4f}'.format(result['micro_p']))
+    logging.info('  Recall: {:.4f}'.format(result['micro_r']))
+    logging.info('  F1: {:.4f}'.format(result['micro_f1']))
+    logging.info('')
+    logging.info('Macro metrics (all classes including Na):')
+    logging.info('  Accuracy: {:.4f}'.format(result['macro_acc']))
+    logging.info('  Precision: {:.4f}'.format(result['macro_p']))
+    logging.info('  Recall: {:.4f}'.format(result['macro_r']))
+    logging.info('  F1: {:.4f}'.format(result['macro_f1']))
+    logging.info('=' * 80)
 
     # Save predictions to file for inspection
     logging.info('Saving predictions to predictions.json...')
