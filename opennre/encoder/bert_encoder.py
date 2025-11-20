@@ -1,7 +1,7 @@
 import logging
 import torch
 import torch.nn as nn
-from transformers import BertModel, BertTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoConfig
 from .base_encoder import BaseEncoder
 
 class BERTEncoder(nn.Module):
@@ -10,18 +10,62 @@ class BERTEncoder(nn.Module):
         Args:
             max_length: max length of sentence
             pretrain_path: path of pretrain model
+
+        Automatically detects and supports BERT, RoBERTa, and similar models.
         """
         super().__init__()
         self.max_length = max_length
         self.blank_padding = blank_padding
         self.hidden_size = 768
         self.mask_entity = mask_entity
-        logging.info('Loading BERT pre-trained checkpoint.')
-        self.bert = BertModel.from_pretrained(pretrain_path)
-        self.tokenizer = BertTokenizer.from_pretrained(pretrain_path)
 
-        # CRITICAL FIX: Set BERT to training mode!
+        # Auto-detect model type (BERT, RoBERTa, etc.)
+        logging.info(f'Loading pre-trained model from {pretrain_path}')
+        config = AutoConfig.from_pretrained(pretrain_path)
+        self.model_type = config.model_type.lower()
+        logging.info(f'Detected model type: {self.model_type}')
+
+        self.bert = AutoModel.from_pretrained(pretrain_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(pretrain_path)
+
+        # Get special tokens based on model type
+        self._setup_special_tokens()
+
+        # CRITICAL FIX: Set model to training mode!
         self.bert.train()
+
+    def _setup_special_tokens(self):
+        """Setup special tokens based on model type (BERT vs RoBERTa)"""
+        if 'roberta' in self.model_type:
+            self.cls_token = self.tokenizer.cls_token or '<s>'
+            self.sep_token = self.tokenizer.sep_token or '</s>'
+            self.pad_token_id = self.tokenizer.pad_token_id or 1
+
+            # RoBERTa doesn't have [unused] tokens by default, we need to add them
+            special_tokens = {
+                'additional_special_tokens': [
+                    '<e1>', '<e2>', '<e3>', '<e4>',  # Entity markers
+                    '<e1-end>', '<e2-end>', '<e3-end>', '<e4-end>',  # Entity end markers
+                    '<e-mask-1>', '<e-mask-2>'  # Entity mask tokens
+                ]
+            }
+            num_added = self.tokenizer.add_special_tokens(special_tokens)
+            if num_added > 0:
+                logging.info(f'Added {num_added} special tokens for RoBERTa')
+                self.bert.resize_token_embeddings(len(self.tokenizer))
+
+            # Map to our marker system
+            self.marker_tokens = ['<e1>', '<e2>', '<e3>', '<e4>']
+            self.mask_tokens = ['<e-mask-1>', '<e-mask-2>']
+
+        else:  # BERT and similar
+            self.cls_token = '[CLS]'
+            self.sep_token = '[SEP]'
+            self.pad_token_id = 0
+            self.marker_tokens = ['[unused0]', '[unused1]', '[unused2]', '[unused3]']
+            self.mask_tokens = ['[unused4]', '[unused5]']
+
+        logging.info(f'Using special tokens: CLS={self.cls_token}, SEP={self.sep_token}, PAD_ID={self.pad_token_id}')
 
     def forward(self, token, att_mask, pos1, pos2):
         """
@@ -32,7 +76,6 @@ class BERTEncoder(nn.Module):
             (B, H), representations for sentences
         """
         _, x = self.bert(token, attention_mask=att_mask, return_dict=False)
-        #return_dict=fault is set to adapt to the new version of transformers
         return x
 
     def tokenize(self, item):
@@ -57,39 +100,44 @@ class BERTEncoder(nn.Module):
         head_first = pos_head[0] <= pos_tail[0]
 
         # Create marker list with positions and types
-        # Format: (char_position, marker_token, is_end, entity_type)
+        # Use dynamic marker tokens based on model type
+        marker0 = self.marker_tokens[0]
+        marker1 = self.marker_tokens[1]
+        marker2 = self.marker_tokens[2]
+        marker3 = self.marker_tokens[3]
+
         markers = []
         if not is_token:
-            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
-            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
-            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
-            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
+            markers.append((pos_head[0], marker0 if head_first else marker2, False, 'head'))
+            markers.append((pos_head[1], marker1 if head_first else marker3, True, 'head'))
+            markers.append((pos_tail[0], marker2 if head_first else marker0, False, 'tail'))
+            markers.append((pos_tail[1], marker3 if head_first else marker1, True, 'tail'))
         else:
-            # For token-based input, convert token positions to character-like positions
-            # by treating each token as a unit
-            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
-            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
-            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
-            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
+            markers.append((pos_head[0], marker0 if head_first else marker2, False, 'head'))
+            markers.append((pos_head[1], marker1 if head_first else marker3, True, 'head'))
+            markers.append((pos_tail[0], marker2 if head_first else marker0, False, 'tail'))
+            markers.append((pos_tail[1], marker3 if head_first else marker1, True, 'tail'))
 
         # Sort markers by position (and by end markers after start markers at same position)
         markers.sort(key=lambda x: (x[0], x[2]))  # Sort by position, then by is_end
 
         # Build token sequence with markers
-        re_tokens = ['[CLS]']
+        re_tokens = [self.cls_token]
         prev_pos = 0
-        pos1_marker = '[unused0]' if head_first else '[unused2]'  # Head start marker
-        pos2_marker = '[unused2]' if head_first else '[unused0]'  # Tail start marker
+        pos1_marker = marker0 if head_first else marker2  # Head start marker
+        pos2_marker = marker2 if head_first else marker0  # Tail start marker
         pos1 = None
         pos2 = None
 
         if self.mask_entity:
             # Replace markers with mask tokens
+            mask1 = self.mask_tokens[0]
+            mask2 = self.mask_tokens[1]
             marker_map = {
-                '[unused0]': '[unused4]' if head_first else '[unused5]',
-                '[unused1]': '[unused4]' if head_first else '[unused5]',
-                '[unused2]': '[unused5]' if head_first else '[unused4]',
-                '[unused3]': '[unused5]' if head_first else '[unused4]'
+                marker0: mask1 if head_first else mask2,
+                marker1: mask1 if head_first else mask2,
+                marker2: mask2 if head_first else mask1,
+                marker3: mask2 if head_first else mask1
             }
 
         for char_pos, marker_token, is_end, entity_type in markers:
@@ -99,23 +147,19 @@ class BERTEncoder(nn.Module):
                     segment_tokens = self.tokenizer.tokenize(sentence[prev_pos:char_pos])
                     re_tokens.extend(segment_tokens)
             else:
-                # For token-based input
                 if char_pos > prev_pos:
                     segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:char_pos]))
                     re_tokens.extend(segment_tokens)
 
             # Add marker
             if self.mask_entity and not is_end:
-                # Only add mask for start markers
                 re_tokens.append(marker_map[marker_token])
-                # Update positions
                 if marker_token == pos1_marker:
                     pos1 = len(re_tokens) - 1
                 elif marker_token == pos2_marker:
                     pos2 = len(re_tokens) - 1
             elif not self.mask_entity:
                 re_tokens.append(marker_token)
-                # Track positions for entity start markers
                 if marker_token == pos1_marker:
                     pos1 = len(re_tokens) - 1
                 elif marker_token == pos2_marker:
@@ -135,11 +179,11 @@ class BERTEncoder(nn.Module):
                 segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:]))
                 re_tokens.extend(segment_tokens)
 
-        re_tokens.append('[SEP]')
+        re_tokens.append(self.sep_token)
 
         # Ensure pos1 and pos2 are set
         if pos1 is None:
-            pos1 = 1  # Default to position after [CLS]
+            pos1 = 1  # Default to position after CLS
         if pos2 is None:
             pos2 = 1
 
@@ -153,7 +197,7 @@ class BERTEncoder(nn.Module):
         # Padding
         if self.blank_padding:
             while len(indexed_tokens) < self.max_length:
-                indexed_tokens.append(0)  # 0 is id for [PAD]
+                indexed_tokens.append(self.pad_token_id)
             indexed_tokens = indexed_tokens[:self.max_length]
         indexed_tokens = torch.tensor(indexed_tokens).long().unsqueeze(0)  # (1, L)
 
@@ -170,21 +214,65 @@ class BERTEntityEncoder(nn.Module):
         Args:
             max_length: max length of sentence
             pretrain_path: path of pretrain model
+
+        Automatically detects and supports BERT, RoBERTa, and similar models.
+        Uses entity marker positions for relation classification.
         """
         super().__init__()
         self.max_length = max_length
         self.blank_padding = blank_padding
         self.hidden_size = 768 * 2
         self.mask_entity = mask_entity
-        logging.info('Loading BERT pre-trained checkpoint.')
-        self.bert = BertModel.from_pretrained(pretrain_path)
-        self.tokenizer = BertTokenizer.from_pretrained(pretrain_path)
 
-        # CRITICAL FIX: Set BERT to training mode!
-        # By default, from_pretrained loads in eval mode
+        # Auto-detect model type (BERT, RoBERTa, etc.)
+        logging.info(f'Loading pre-trained model from {pretrain_path}')
+        config = AutoConfig.from_pretrained(pretrain_path)
+        self.model_type = config.model_type.lower()
+        logging.info(f'Detected model type: {self.model_type}')
+
+        self.bert = AutoModel.from_pretrained(pretrain_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(pretrain_path)
+
+        # Get special tokens based on model type
+        self._setup_special_tokens()
+
+        # CRITICAL FIX: Set model to training mode!
         self.bert.train()
 
         self.linear = nn.Linear(self.hidden_size, self.hidden_size)
+
+    def _setup_special_tokens(self):
+        """Setup special tokens based on model type (BERT vs RoBERTa)"""
+        if 'roberta' in self.model_type:
+            self.cls_token = self.tokenizer.cls_token or '<s>'
+            self.sep_token = self.tokenizer.sep_token or '</s>'
+            self.pad_token_id = self.tokenizer.pad_token_id or 1
+
+            # RoBERTa doesn't have [unused] tokens by default, we need to add them
+            special_tokens = {
+                'additional_special_tokens': [
+                    '<e1>', '<e2>', '<e3>', '<e4>',  # Entity markers
+                    '<e1-end>', '<e2-end>', '<e3-end>', '<e4-end>',  # Entity end markers
+                    '<e-mask-1>', '<e-mask-2>'  # Entity mask tokens
+                ]
+            }
+            num_added = self.tokenizer.add_special_tokens(special_tokens)
+            if num_added > 0:
+                logging.info(f'Added {num_added} special tokens for RoBERTa')
+                self.bert.resize_token_embeddings(len(self.tokenizer))
+
+            # Map to our marker system
+            self.marker_tokens = ['<e1>', '<e2>', '<e3>', '<e4>']
+            self.mask_tokens = ['<e-mask-1>', '<e-mask-2>']
+
+        else:  # BERT and similar
+            self.cls_token = '[CLS]'
+            self.sep_token = '[SEP]'
+            self.pad_token_id = 0
+            self.marker_tokens = ['[unused0]', '[unused1]', '[unused2]', '[unused3]']
+            self.mask_tokens = ['[unused4]', '[unused5]']
+
+        logging.info(f'Using special tokens: CLS={self.cls_token}, SEP={self.sep_token}, PAD_ID={self.pad_token_id}')
 
     def forward(self, token, att_mask, pos1, pos2):
         """
@@ -231,39 +319,44 @@ class BERTEntityEncoder(nn.Module):
         head_first = pos_head[0] <= pos_tail[0]
 
         # Create marker list with positions and types
-        # Format: (char_position, marker_token, is_end, entity_type)
+        # Use dynamic marker tokens based on model type
+        marker0 = self.marker_tokens[0]
+        marker1 = self.marker_tokens[1]
+        marker2 = self.marker_tokens[2]
+        marker3 = self.marker_tokens[3]
+
         markers = []
         if not is_token:
-            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
-            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
-            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
-            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
+            markers.append((pos_head[0], marker0 if head_first else marker2, False, 'head'))
+            markers.append((pos_head[1], marker1 if head_first else marker3, True, 'head'))
+            markers.append((pos_tail[0], marker2 if head_first else marker0, False, 'tail'))
+            markers.append((pos_tail[1], marker3 if head_first else marker1, True, 'tail'))
         else:
-            # For token-based input, convert token positions to character-like positions
-            # by treating each token as a unit
-            markers.append((pos_head[0], '[unused0]' if head_first else '[unused2]', False, 'head'))
-            markers.append((pos_head[1], '[unused1]' if head_first else '[unused3]', True, 'head'))
-            markers.append((pos_tail[0], '[unused2]' if head_first else '[unused0]', False, 'tail'))
-            markers.append((pos_tail[1], '[unused3]' if head_first else '[unused1]', True, 'tail'))
+            markers.append((pos_head[0], marker0 if head_first else marker2, False, 'head'))
+            markers.append((pos_head[1], marker1 if head_first else marker3, True, 'head'))
+            markers.append((pos_tail[0], marker2 if head_first else marker0, False, 'tail'))
+            markers.append((pos_tail[1], marker3 if head_first else marker1, True, 'tail'))
 
         # Sort markers by position (and by end markers after start markers at same position)
         markers.sort(key=lambda x: (x[0], x[2]))  # Sort by position, then by is_end
 
         # Build token sequence with markers
-        re_tokens = ['[CLS]']
+        re_tokens = [self.cls_token]
         prev_pos = 0
-        pos1_marker = '[unused0]' if head_first else '[unused2]'  # Head start marker
-        pos2_marker = '[unused2]' if head_first else '[unused0]'  # Tail start marker
+        pos1_marker = marker0 if head_first else marker2  # Head start marker
+        pos2_marker = marker2 if head_first else marker0  # Tail start marker
         pos1 = None
         pos2 = None
 
         if self.mask_entity:
             # Replace markers with mask tokens
+            mask1 = self.mask_tokens[0]
+            mask2 = self.mask_tokens[1]
             marker_map = {
-                '[unused0]': '[unused4]' if head_first else '[unused5]',
-                '[unused1]': '[unused4]' if head_first else '[unused5]',
-                '[unused2]': '[unused5]' if head_first else '[unused4]',
-                '[unused3]': '[unused5]' if head_first else '[unused4]'
+                marker0: mask1 if head_first else mask2,
+                marker1: mask1 if head_first else mask2,
+                marker2: mask2 if head_first else mask1,
+                marker3: mask2 if head_first else mask1
             }
 
         for char_pos, marker_token, is_end, entity_type in markers:
@@ -273,23 +366,19 @@ class BERTEntityEncoder(nn.Module):
                     segment_tokens = self.tokenizer.tokenize(sentence[prev_pos:char_pos])
                     re_tokens.extend(segment_tokens)
             else:
-                # For token-based input
                 if char_pos > prev_pos:
                     segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:char_pos]))
                     re_tokens.extend(segment_tokens)
 
             # Add marker
             if self.mask_entity and not is_end:
-                # Only add mask for start markers
                 re_tokens.append(marker_map[marker_token])
-                # Update positions
                 if marker_token == pos1_marker:
                     pos1 = len(re_tokens) - 1
                 elif marker_token == pos2_marker:
                     pos2 = len(re_tokens) - 1
             elif not self.mask_entity:
                 re_tokens.append(marker_token)
-                # Track positions for entity start markers
                 if marker_token == pos1_marker:
                     pos1 = len(re_tokens) - 1
                 elif marker_token == pos2_marker:
@@ -309,11 +398,11 @@ class BERTEntityEncoder(nn.Module):
                 segment_tokens = self.tokenizer.tokenize(' '.join(sentence[prev_pos:]))
                 re_tokens.extend(segment_tokens)
 
-        re_tokens.append('[SEP]')
+        re_tokens.append(self.sep_token)
 
         # Ensure pos1 and pos2 are set
         if pos1 is None:
-            pos1 = 1  # Default to position after [CLS]
+            pos1 = 1  # Default to position after CLS
         if pos2 is None:
             pos2 = 1
 
@@ -329,7 +418,7 @@ class BERTEntityEncoder(nn.Module):
         # Padding
         if self.blank_padding:
             while len(indexed_tokens) < self.max_length:
-                indexed_tokens.append(0)  # 0 is id for [PAD]
+                indexed_tokens.append(self.pad_token_id)
             indexed_tokens = indexed_tokens[:self.max_length]
         indexed_tokens = torch.tensor(indexed_tokens).long().unsqueeze(0)  # (1, L)
 
