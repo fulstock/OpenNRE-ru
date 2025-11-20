@@ -58,6 +58,18 @@ if __name__ == '__main__':
     parser.add_argument('--use_class_weights', action='store_true',
             help='Use class-weighted loss to address class imbalance (reduces Na over-prediction)')
 
+    # AMTL (Adaptive Multi-Threshold Loss) arguments
+    parser.add_argument('--use_amtl', action='store_true',
+            help='Use AMTL (Adaptive Multi-Threshold Loss) for class imbalance - recommended for long-tail distributions')
+    parser.add_argument('--amtl_num_segments', default=4, type=int,
+            help='AMTL number of class frequency segments (default: 4, use 3 for smaller datasets)')
+    parser.add_argument('--amtl_lambda', default=None, type=float,
+            help='AMTL lambda smoothing parameter (default: n-0.5 per paper). Advanced users only.')
+
+    # Hard Negative Sampling
+    parser.add_argument('--negative_ratio', default=None, type=float,
+            help='Hard negative sampling ratio (negative:positive). Recommended: 3.0. Set to None to use all negatives.')
+
     # Seed
     parser.add_argument('--seed', default=42, type=int,
             help='Seed')
@@ -129,7 +141,11 @@ if __name__ == '__main__':
         max_epoch=args.max_epoch,
         lr=args.lr,
         opt='adamw',
-        use_class_weights=args.use_class_weights
+        use_class_weights=args.use_class_weights,
+        use_amtl=args.use_amtl,
+        amtl_num_segments=args.amtl_num_segments,
+        amtl_lambda=args.amtl_lambda,
+        negative_ratio=args.negative_ratio
     )
 
     # Train the model

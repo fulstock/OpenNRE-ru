@@ -4,6 +4,7 @@ import torch
 from torch import nn, optim
 from .data_loader import SentenceRELoader
 from .utils import AverageMeter
+from .amtl_loss import AMTLLoss
 
 class SentenceRE(nn.Module):
 
@@ -19,7 +20,11 @@ class SentenceRE(nn.Module):
                  weight_decay=1e-5,
                  warmup_step=300,
                  opt='sgd',
-                 use_class_weights=False):
+                 use_class_weights=False,
+                 use_amtl=False,
+                 amtl_num_segments=4,
+                 amtl_lambda=None,
+                 negative_ratio=None):
     
         super().__init__()
         self.max_epoch = max_epoch
@@ -30,7 +35,8 @@ class SentenceRE(nn.Module):
                 model.rel2id,
                 model.sentence_encoder.tokenize,
                 batch_size,
-                True)
+                True,
+                negative_ratio=negative_ratio)
 
         if val_path != None:
             self.val_loader = SentenceRELoader(
@@ -38,15 +44,17 @@ class SentenceRE(nn.Module):
                 model.rel2id,
                 model.sentence_encoder.tokenize,
                 batch_size,
-                False)
-        
+                False,
+                negative_ratio=None)  # Don't sample validation set
+
         if test_path != None:
             self.test_loader = SentenceRELoader(
                 test_path,
                 model.rel2id,
                 model.sentence_encoder.tokenize,
                 batch_size,
-                False
+                False,
+                negative_ratio=None  # Don't sample test set
             )
         # Model
         self.model = model
@@ -62,8 +70,32 @@ class SentenceRE(nn.Module):
         else:
             logging.info("Using single GPU or CPU, skipping DataParallel")
             self.parallel_model = self.model
-        # Criterion - optionally use class weights to address class imbalance
-        if use_class_weights and train_path is not None:
+        # Criterion - optionally use AMTL or class weights to address class imbalance
+        if use_amtl and train_path is not None:
+            logging.info("Using AMTL (Adaptive Multi-Threshold Loss) for class imbalance")
+            logging.info("IMPLEMENTATION: Following Xu et al. (2025) exact formulation (Equations 2-4)")
+
+            # Calculate class frequencies for AMTL
+            class_freq = {}
+            for item in self.train_loader.dataset.data:
+                rel = item['relation']
+                rel_id = model.rel2id[rel]
+                class_freq[rel_id] = class_freq.get(rel_id, 0) + 1
+
+            num_classes = len(model.rel2id)
+
+            # Initialize AMTL loss with correct paper parameters
+            self.criterion = AMTLLoss(
+                class_freq=class_freq,
+                num_classes=num_classes,
+                num_segments=amtl_num_segments,
+                lambda_smooth=amtl_lambda  # Uses n-0.5 by default (paper's optimal)
+            )
+
+            if torch.cuda.is_available():
+                self.criterion = self.criterion.cuda()
+
+        elif use_class_weights and train_path is not None:
             import math
             logging.info("Calculating class weights from training data...")
             class_counts = {}

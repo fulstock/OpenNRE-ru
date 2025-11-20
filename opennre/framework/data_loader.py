@@ -8,18 +8,22 @@ class SentenceREDataset(data.Dataset):
     """
     Sentence-level relation extraction dataset
     """
-    def __init__(self, path, rel2id, tokenizer, kwargs):
+    def __init__(self, path, rel2id, tokenizer, kwargs, negative_ratio=None):
         """
         Args:
             path: path of the input file
             rel2id: dictionary of relation->id mapping
             tokenizer: function of tokenizing
+            kwargs: additional arguments for tokenizer
+            negative_ratio: if set, downsample Na class to this ratio relative to positive examples
+                          e.g., 3.0 means keep 3 Na examples per 1 positive example
         """
         super().__init__()
         self.path = path
         self.tokenizer = tokenizer
         self.rel2id = rel2id
         self.kwargs = kwargs
+        self.negative_ratio = negative_ratio
 
         # Load the file
         f = open(path, encoding = "UTF-8")
@@ -31,6 +35,10 @@ class SentenceREDataset(data.Dataset):
         f.close()
         logging.info("Loaded sentence RE dataset {} with {} lines and {} relations.".format(path, len(self.data), len(self.rel2id)))
 
+        # Apply hard negative sampling if requested
+        if negative_ratio is not None:
+            self.data = self._apply_hard_negative_sampling(self.data, rel2id, negative_ratio)
+
         # Pre-tokenize all data for faster training
         logging.info("Pre-tokenizing dataset...")
         self.tokenized_data = []
@@ -40,13 +48,76 @@ class SentenceREDataset(data.Dataset):
             self.tokenized_data.append([label] + seq)
         logging.info("Tokenization complete! {} examples ready.".format(len(self.tokenized_data)))
 
+    def _apply_hard_negative_sampling(self, data, rel2id, negative_ratio):
+        """
+        Downsample Na (negative) examples to maintain specified ratio with positive examples.
+
+        Args:
+            data: List of all examples
+            rel2id: Relation to ID mapping
+            negative_ratio: Target ratio of negative to positive examples (e.g., 3.0)
+
+        Returns:
+            Downsampled data with balanced negative/positive ratio
+        """
+        # Find Na relation name
+        na_rel = None
+        for name in ['NA', 'na', 'Na', 'no_relation', 'Other', 'Others']:
+            if name in rel2id:
+                na_rel = name
+                break
+
+        if na_rel is None:
+            logging.warning("No Na/negative relation found, skipping negative sampling")
+            return data
+
+        # Separate positive and negative examples
+        positive_examples = []
+        negative_examples = []
+
+        for item in data:
+            if item['relation'] == na_rel:
+                negative_examples.append(item)
+            else:
+                positive_examples.append(item)
+
+        num_positive = len(positive_examples)
+        num_negative = len(negative_examples)
+        original_ratio = num_negative / num_positive if num_positive > 0 else 0
+
+        logging.info(f"Hard Negative Sampling:")
+        logging.info(f"  Original - Positive: {num_positive}, Negative: {num_negative} (ratio: {original_ratio:.2f}:1)")
+
+        # Calculate target number of negative examples
+        target_negative = int(num_positive * negative_ratio)
+
+        if target_negative >= num_negative:
+            # We have fewer negatives than target, keep all
+            logging.info(f"  Target ratio {negative_ratio}:1 requires {target_negative} negatives")
+            logging.info(f"  Keeping all {num_negative} negative examples (ratio unchanged)")
+            return data
+
+        # Randomly sample negative examples
+        random.seed(42)  # For reproducibility
+        sampled_negatives = random.sample(negative_examples, target_negative)
+
+        # Combine positive and sampled negative examples
+        balanced_data = positive_examples + sampled_negatives
+        random.shuffle(balanced_data)  # Shuffle to mix positive and negative
+
+        new_ratio = len(sampled_negatives) / num_positive if num_positive > 0 else 0
+        logging.info(f"  Sampled - Positive: {num_positive}, Negative: {len(sampled_negatives)} (ratio: {new_ratio:.2f}:1)")
+        logging.info(f"  Total examples after sampling: {len(balanced_data)} (removed {num_negative - target_negative} Na examples)")
+
+        return balanced_data
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, index):
         # Return pre-tokenized data (much faster than tokenizing on-the-fly)
         return self.tokenized_data[index]
-    
+
     def collate_fn(data):
         data = list(zip(*data))
         labels = data[0]
@@ -176,11 +247,11 @@ class SentenceREDataset(data.Dataset):
         return result
     
 def SentenceRELoader(path, rel2id, tokenizer, batch_size,
-        shuffle, num_workers=0, collate_fn=SentenceREDataset.collate_fn, **kwargs):
+        shuffle, num_workers=0, collate_fn=SentenceREDataset.collate_fn, negative_ratio=None, **kwargs):
     # CRITICAL FIX: Default to num_workers=0 instead of 8
     # Multiprocessing workers cause issues with BERT model serialization
     # leading to corrupted embeddings. Use single-process loading instead.
-    dataset = SentenceREDataset(path = path, rel2id = rel2id, tokenizer = tokenizer, kwargs=kwargs)
+    dataset = SentenceREDataset(path = path, rel2id = rel2id, tokenizer = tokenizer, kwargs=kwargs, negative_ratio=negative_ratio)
     data_loader = data.DataLoader(dataset=dataset,
             batch_size=batch_size,
             shuffle=shuffle,
