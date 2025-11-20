@@ -58,6 +58,18 @@ if __name__ == '__main__':
     parser.add_argument('--use_class_weights', action='store_true',
             help='Use class-weighted loss to address class imbalance (reduces Na over-prediction)')
 
+    # NCRL (None Class Ranking Loss) options
+    parser.add_argument('--use_ncrl', action='store_true',
+            help='Use NCRL (None Class Ranking Loss) instead of CrossEntropyLoss - recommended for extreme class imbalance')
+    parser.add_argument('--ncrl_gamma', default=0.01, type=float,
+            help='NCRL margin shifting parameter (0.01 or 0.05). Higher = more tolerance for hard negatives')
+    parser.add_argument('--ncrl_margin_reg', action='store_true', default=True,
+            help='Use NCRL margin regularization (recommended)')
+
+    # Hard Negative Sampling
+    parser.add_argument('--negative_ratio', default=None, type=float,
+            help='Hard negative sampling ratio (negative:positive). Recommended: 3.0. Set to None to use all negatives.')
+
     # Seed
     parser.add_argument('--seed', default=42, type=int,
             help='Seed')
@@ -129,7 +141,11 @@ if __name__ == '__main__':
         max_epoch=args.max_epoch,
         lr=args.lr,
         opt='adamw',
-        use_class_weights=args.use_class_weights
+        use_class_weights=args.use_class_weights,
+        use_ncrl=args.use_ncrl,
+        ncrl_gamma=args.ncrl_gamma,
+        ncrl_margin_reg=args.ncrl_margin_reg,
+        negative_ratio=args.negative_ratio
     )
 
     # Train the model

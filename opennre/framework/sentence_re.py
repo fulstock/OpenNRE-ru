@@ -19,8 +19,12 @@ class SentenceRE(nn.Module):
                  weight_decay=1e-5,
                  warmup_step=300,
                  opt='sgd',
-                 use_class_weights=False):
-    
+                 use_class_weights=False,
+                 use_ncrl=False,
+                 ncrl_gamma=0.01,
+                 ncrl_margin_reg=True,
+                 negative_ratio=None):
+
         super().__init__()
         self.max_epoch = max_epoch
         # Load data
@@ -30,7 +34,8 @@ class SentenceRE(nn.Module):
                 model.rel2id,
                 model.sentence_encoder.tokenize,
                 batch_size,
-                True)
+                True,
+                negative_ratio=negative_ratio)
 
         if val_path != None:
             self.val_loader = SentenceRELoader(
@@ -38,15 +43,17 @@ class SentenceRE(nn.Module):
                 model.rel2id,
                 model.sentence_encoder.tokenize,
                 batch_size,
-                False)
-        
+                False,
+                negative_ratio=None)  # Don't sample validation set
+
         if test_path != None:
             self.test_loader = SentenceRELoader(
                 test_path,
                 model.rel2id,
                 model.sentence_encoder.tokenize,
                 batch_size,
-                False
+                False,
+                negative_ratio=None  # Don't sample test set
             )
         # Model
         self.model = model
@@ -140,12 +147,30 @@ class SentenceRE(nn.Module):
 
             self.criterion = nn.CrossEntropyLoss(weight=class_weights)
         else:
-            # Use standard unweighted loss
-            if use_class_weights:
-                logging.info("Class weights requested but no training data available, using unweighted loss")
+            # Option to use NCRL loss instead of CrossEntropyLoss
+            if use_ncrl:
+                from .ncrl_loss import NCRLLoss
+
+                logging.info("Using NCRL Loss (None Class Ranking Loss)")
+                logging.info(f"  Gamma (margin shift): {ncrl_gamma}")
+                logging.info(f"  Margin regularization: {ncrl_margin_reg}")
+                logging.info("  Paper: Zhou & Lee (2022) - Equations 2, 5, 6, 7")
+
+                self.criterion = NCRLLoss(
+                    num_classes=len(model.rel2id),
+                    gamma=ncrl_gamma,
+                    use_margin_reg=ncrl_margin_reg
+                )
+
+                if torch.cuda.is_available():
+                    self.criterion = self.criterion.cuda()
             else:
-                logging.info("Using standard unweighted CrossEntropyLoss")
-            self.criterion = nn.CrossEntropyLoss()
+                # Use standard unweighted loss
+                if use_class_weights:
+                    logging.info("Class weights requested but no training data available, using unweighted loss")
+                else:
+                    logging.info("Using standard unweighted CrossEntropyLoss")
+                self.criterion = nn.CrossEntropyLoss()
         # Params and optimizer
         params = self.parameters()
         self.lr = lr
