@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """
+
 BRAT to TACRED Format Converter for OpenNRE
 
 Converts BRAT standoff format (.ann + .txt files) to TACRED-like JSON format
